@@ -1,6 +1,9 @@
-name: build
+name: upstream build
 
-on: [push, pull_request]
+# O fork usa o workflow "Jovin installers" para as distribuições. A matriz completa do projeto
+# upstream permanece disponível para diagnóstico, mas não roda a cada push/PR e não consome minutos
+# de macOS/Windows sem necessidade.
+on: workflow_dispatch
 
 jobs:
   ubuntu:
@@ -88,5 +91,4 @@ jobs:
           ant testng
           Start-Process -Wait ./out/qz-tray-*.exe -ArgumentList "/S"
           "&'C:/Program Files/QZ Tray/qz-tray.exe' --wait --version|Out-Null"
-
 

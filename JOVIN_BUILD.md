@@ -4,6 +4,10 @@ O workflow `Jovin installers` gera instaladores QZ Tray provisionados para Windo
 sem versionar certificados. Ele só pode ser iniciado manualmente por alguém com permissão de escrita
 no repositório e usa, por padrão, a versão oficial `v2.3.0`.
 
+A matriz completa herdada do projeto upstream está preservada como `upstream build`, disponível para
+execução manual. Ela não roda a cada push ou pull request do fork para evitar consumo desnecessário
+de runners Windows e macOS.
+
 ## Configuração única no GitHub
 
 Cadastre em **Settings → Secrets and variables → Actions → New repository secret**:
