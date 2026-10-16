@@ -1,0 +1,147 @@
+name: Jovin installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: GitHub Release tag
+        required: true
+        default: jovin-qz-v2.3.0.1
+      app_origin:
+        description: Jovin web application origin
+        required: true
+        default: https://app.jovin.com.br
+      publish_release:
+        description: Publish or update a GitHub Release
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: jovin-installers-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate inputs
+        env:
+          APP_ORIGIN: ${{ inputs.app_origin }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$APP_ORIGIN" =~ ^https://[^/]+$ ]] || {
+            echo "app_origin must be an HTTPS origin without a path" >&2
+            exit 2
+          }
+          [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9._-]+$ ]] || {
+            echo "release_tag contains unsupported characters" >&2
+            exit 2
+          }
+      - name: Check out pinned QZ Tray source
+        uses: actions/checkout@v6
+        with:
+          ref: v2.3.0
+          fetch-depth: 1
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: liberica
+          java-version: "25"
+
+      - name: Install packaging dependencies
+        run: sudo apt-get update && sudo apt-get install --yes ant jq makeself nsis
+
+      - name: Create ephemeral Jovin provisioning
+        env:
+          APP_ORIGIN: ${{ inputs.app_origin }}
+          JOVIN_QZ_CA_CRT_BASE64: ${{ secrets.JOVIN_QZ_CA_CRT_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$JOVIN_QZ_CA_CRT_BASE64" ]]; then
+            echo "Repository secret JOVIN_QZ_CA_CRT_BASE64 is required" >&2
+            exit 2
+          fi
+
+          provision_dir="$RUNNER_TEMP/jovin-qz-provision"
+          mkdir -p "$provision_dir"
+          printf '%s' "$JOVIN_QZ_CA_CRT_BASE64" | base64 --decode > "$provision_dir/jovin-qz-ca.crt"
+          openssl x509 -in "$provision_dir/jovin-qz-ca.crt" -noout -subject -fingerprint -sha256
+
+          app_host="${APP_ORIGIN#https://}"
+          jq -n \
+            --arg app_origin "$APP_ORIGIN" \
+            --arg app_host "$app_host" \
+            '[
+              {
+                description: "Trust Jovin print-signing authority",
+                type: "ca",
+                data: "jovin-qz-ca.crt"
+              },
+              {
+                description: "Allow Chromium local-network access for Jovin",
+                type: "policy",
+                phase: "certgen",
+                app: "chromium",
+                name: "LocalNetworkAccessAllowedForUrls",
+                format: "array",
+                data: $app_origin
+              },
+              {
+                description: "Allow Firefox local-network access for Jovin",
+                type: "policy",
+                phase: "certgen",
+                app: "firefox",
+                name: "LocalNetworkAccess",
+                format: "map",
+                data: ({SkipDomains: [$app_host]} | tojson)
+              }
+            ]' > "$provision_dir/provision.json"
+
+          echo "PROVISION_FILE=$provision_dir/provision.json" >> "$GITHUB_ENV"
+
+      - name: Build Linux installer
+        run: |
+          set -euo pipefail
+          ant -Dtarget.arch=x86_64 -Dprovision.file="$PROVISION_FILE" makeself
+          mkdir -p "$RUNNER_TEMP/jovin-installers"
+          mapfile -t packages < <(find out -maxdepth 1 -type f -name '*.run')
+          [[ ${#packages[@]} -eq 1 ]] || { echo "Expected one Linux installer" >&2; exit 1; }
+          cp "${packages[0]}" "$RUNNER_TEMP/jovin-installers/jovin-qz-tray-linux-x86_64.run"
+
+      - name: Build Windows installer
+        run: |
+          set -euo pipefail
+          ant -Dtarget.arch=x86_64 -Dprovision.file="$PROVISION_FILE" nsis
+          mapfile -t packages < <(find out -maxdepth 1 -type f -name '*.exe')
+          [[ ${#packages[@]} -eq 1 ]] || { echo "Expected one Windows installer" >&2; exit 1; }
+          cp "${packages[0]}" "$RUNNER_TEMP/jovin-installers/jovin-qz-tray-windows-x86_64.exe"
+
+      - name: Generate checksums
+        run: cd "$RUNNER_TEMP/jovin-installers" && sha256sum ./* > SHA256SUMS
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: jovin-qz-installers-${{ inputs.release_tag }}
+          path: ${{ runner.temp }}/jovin-installers/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
+              --title "Jovin QZ Tray $RELEASE_TAG" \
+              --notes "QZ Tray provisionado para impressão automática da Jovin no Windows e Linux."
+          fi
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP"/jovin-installers/* --clobber
