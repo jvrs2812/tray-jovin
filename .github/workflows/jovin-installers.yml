@@ -10,7 +10,7 @@ on:
       app_origin:
         description: Jovin web application origin
         required: true
-        default: https://app.jovin.com.br
+        default: https://jovin.com.br
       publish_release:
         description: Publish or update a GitHub Release
         required: true
